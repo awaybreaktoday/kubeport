@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to release, for example v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.tag }}"
+          else
+            VERSION="${GITHUB_REF_NAME}"
+          fi
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.version }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build archives
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist release
+
+          build() {
+            local goos="$1"
+            local goarch="$2"
+            local ext=""
+            if [ "${goos}" = "windows" ]; then
+              ext=".exe"
+            fi
+
+            local name="kubeport-${goos}-${goarch}"
+            local bin="dist/${name}${ext}"
+
+            echo "==> ${bin}"
+            CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" \
+              go build \
+                -trimpath \
+                -ldflags "-s -w -X main.version=${VERSION}" \
+                -o "${bin}" \
+                ./cmd/kubeport
+
+            if [ "${goos}" = "windows" ]; then
+              (cd dist && zip "../release/${name}.zip" "${name}${ext}")
+            else
+              tar -C dist -czf "release/${name}.tar.gz" "${name}"
+            fi
+          }
+
+          build darwin amd64
+          build darwin arm64
+          build linux amd64
+          build linux arm64
+          build windows amd64
+          build windows arm64
+
+          (cd release && sha256sum * > checksums.txt)
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${VERSION}" >/dev/null 2>&1; then
+            gh release upload "${VERSION}" release/* --clobber
+          else
+            gh release create "${VERSION}" \
+              release/* \
+              --title "${VERSION}" \
+              --notes "Release ${VERSION}"
+          fi
