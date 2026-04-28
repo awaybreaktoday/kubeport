@@ -1,0 +1,9 @@
+dist/
+*.exe
+*.test
+*.out
+coverage.*
+.DS_Store
+.vscode/
+.idea/
+.claude/
